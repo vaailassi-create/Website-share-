@@ -10,7 +10,9 @@ import com.example.model.ServerStatus
 import com.example.model.SharedFile
 import com.example.model.WebMessage
 import com.example.server.WebShareServer
+import com.example.util.AppInstallHelper
 import com.example.util.FileHelper
+import com.example.util.InstalledApp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,6 +48,15 @@ class WebShareViewModel(application: Application) : AndroidViewModel(application
 
     private val _activityLogs = MutableStateFlow<List<ActivityLog>>(emptyList())
     val activityLogs: StateFlow<List<ActivityLog>> = _activityLogs.asStateFlow()
+
+    private val _installPromptFile = MutableStateFlow<SharedFile?>(null)
+    val installPromptFile: StateFlow<SharedFile?> = _installPromptFile.asStateFlow()
+
+    private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
+    val installedApps: StateFlow<List<InstalledApp>> = _installedApps.asStateFlow()
+
+    private val _isScanningApps = MutableStateFlow(false)
+    val isScanningApps: StateFlow<Boolean> = _isScanningApps.asStateFlow()
 
     private var server: WebShareServer? = null
 
@@ -84,6 +95,38 @@ class WebShareViewModel(application: Application) : AndroidViewModel(application
                 getDeviceName = { _serverStatus.value.deviceName },
                 onActivityLogged = { msg, isSuccess ->
                     logActivity(msg, isSuccess)
+                },
+                onInstallRequested = { fileId ->
+                    handleInstallRequest(fileId)
+                },
+                getInstalledApps = {
+                    AppInstallHelper.getInstalledAppsList(getApplication())
+                },
+                onMakeApkRequested = { pkgName ->
+                    val result = AppInstallHelper.makeApkFromApp(getApplication(), pkgName)
+                    if (result.isSuccess) {
+                        val file = result.getOrThrow()
+                        _sharedFiles.update { listOf(file) + it }
+                        _selectedCategory.value = FileCategory.APPS
+                        logActivity("Made APK file by Android: ${file.name}", true)
+                        file
+                    } else {
+                        logActivity("Failed to make APK by Android: ${result.exceptionOrNull()?.message}", false)
+                        null
+                    }
+                },
+                onCreateCustomApkRequested = { appName, pkgName, ver ->
+                    val result = AppInstallHelper.createCustomApkPackage(getApplication(), appName, pkgName, ver)
+                    if (result.isSuccess) {
+                        val file = result.getOrThrow()
+                        _sharedFiles.update { listOf(file) + it }
+                        _selectedCategory.value = FileCategory.APPS
+                        logActivity("Created custom APK package: ${file.name}", true)
+                        file
+                    } else {
+                        logActivity("Failed to create custom APK: ${result.exceptionOrNull()?.message}", false)
+                        null
+                    }
                 }
             )
 
@@ -198,18 +241,138 @@ class WebShareViewModel(application: Application) : AndroidViewModel(application
     private fun onFileReceivedFromWeb(file: File) {
         val ext = file.name.substringAfterLast('.', "").uppercase()
         val mime = FileHelper.getMimeType(file.name)
+        val isApk = ext == "APK" || mime == "application/vnd.android.package-archive"
+        val category = if (isApk) FileCategory.APPS else FileCategory.RECEIVED
         val sharedFile = SharedFile(
             id = UUID.randomUUID().toString(),
             name = file.name,
             size = file.length(),
             mimeType = mime,
-            category = FileCategory.RECEIVED,
+            category = category,
             file = file,
             dateModified = file.lastModified(),
             isReceivedFromWeb = true
         )
         _sharedFiles.update { listOf(sharedFile) + it }
         _serverStatus.update { it.copy(totalUploads = it.totalUploads + 1) }
+
+        if (isApk) {
+            logActivity("Received Android APK from web: '${file.name}'. Prompting install on mobile!", true)
+            _installPromptFile.value = sharedFile
+        } else {
+            logActivity("File uploaded from web: ${file.name} (${file.length() / 1024} KB)", true)
+        }
+    }
+
+    fun promptInstall(file: SharedFile) {
+        _installPromptFile.value = file
+    }
+
+    fun dismissInstallPrompt() {
+        _installPromptFile.value = null
+    }
+
+    fun installAppDirectly(file: SharedFile) {
+        val targetFile = file.file
+        if (targetFile != null && targetFile.exists()) {
+            val result = AppInstallHelper.installApk(getApplication(), targetFile)
+            if (result.isSuccess) {
+                logActivity("Package installer launched for '${file.name}'", true)
+            } else {
+                logActivity("Install failed: ${result.exceptionOrNull()?.message}", false)
+            }
+        } else {
+            logActivity("APK file not found on device for '${file.name}'", false)
+        }
+        _installPromptFile.value = null
+    }
+
+    fun loadInstalledAppsList() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isScanningApps.value = true
+            try {
+                val list = AppInstallHelper.getInstalledAppsList(getApplication())
+                _installedApps.value = list
+                logActivity("Found ${list.size} apps to make APK from Android", true)
+            } catch (e: Exception) {
+                logActivity("Failed to load apps: ${e.message}", false)
+            } finally {
+                _isScanningApps.value = false
+            }
+        }
+    }
+
+    fun makeApk(app: InstalledApp, onResult: ((Boolean, String) -> Unit)? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            logActivity("Making APK file for ${app.appName}...", true)
+            val result = AppInstallHelper.makeApkFromApp(getApplication(), app.packageName)
+            if (result.isSuccess) {
+                val file = result.getOrThrow()
+                _sharedFiles.update { listOf(file) + it }
+                _selectedCategory.value = FileCategory.APPS
+                logActivity("Successfully made APK file: ${file.name}", true)
+                onResult?.invoke(true, "APK made: ${file.name}")
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Failed to make APK"
+                logActivity("APK make failed: $err", false)
+                onResult?.invoke(false, err)
+            }
+        }
+    }
+
+    fun makeCustomApk(
+        appName: String,
+        packageName: String,
+        version: String,
+        onResult: ((Boolean, String) -> Unit)? = null
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            logActivity("Creating custom APK package '$appName'...", true)
+            val result = AppInstallHelper.createCustomApkPackage(
+                getApplication(),
+                appName,
+                packageName,
+                version
+            )
+            if (result.isSuccess) {
+                val file = result.getOrThrow()
+                _sharedFiles.update { listOf(file) + it }
+                _selectedCategory.value = FileCategory.APPS
+                logActivity("Created custom APK package: ${file.name}", true)
+                onResult?.invoke(true, "Created APK: ${file.name}")
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Failed to create APK"
+                logActivity("Custom APK creation failed: $err", false)
+                onResult?.invoke(false, err)
+            }
+        }
+    }
+
+    fun loadInstalledApps() {
+        viewModelScope.launch(Dispatchers.IO) {
+            logActivity("Scanning installed mobile apps...", true)
+            val apps = AppInstallHelper.getInstalledMobileApps(getApplication())
+            if (apps.isNotEmpty()) {
+                _sharedFiles.update { current ->
+                    val currentIds = current.map { it.id }.toSet()
+                    val newApps = apps.filter { it.id !in currentIds }
+                    newApps + current
+                }
+                _selectedCategory.value = FileCategory.APPS
+                logActivity("Added ${apps.size} installed mobile app(s) to share", true)
+            } else {
+                _selectedCategory.value = FileCategory.APPS
+                logActivity("Mobile app catalog ready", true)
+            }
+        }
+    }
+
+    private fun handleInstallRequest(fileId: String) {
+        val file = _sharedFiles.value.find { it.id == fileId }
+        if (file != null && file.isApk) {
+            _installPromptFile.value = file
+            logActivity("Web user requested install for '${file.name}' on mobile", true)
+        }
     }
 
     fun sendMessageFromPhone(text: String) {

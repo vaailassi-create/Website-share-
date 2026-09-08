@@ -4,6 +4,7 @@ import java.io.File
 
 enum class FileCategory(val label: String) {
     ALL("All Files"),
+    APPS("Apps (APKs)"),
     DOCUMENT("Documents"),
     IMAGE("Photos"),
     VIDEO("Videos"),
@@ -20,7 +21,9 @@ data class SharedFile(
     val file: File? = null,
     val contentUri: String? = null,
     val dateModified: Long = System.currentTimeMillis(),
-    val isReceivedFromWeb: Boolean = false
+    val isReceivedFromWeb: Boolean = false,
+    val packageName: String? = null,
+    val appVersion: String? = null
 ) {
     val formattedSize: String
         get() {
@@ -33,6 +36,9 @@ data class SharedFile(
 
     val extension: String
         get() = name.substringAfterLast('.', "").uppercase()
+
+    val isApk: Boolean
+        get() = extension == "APK" || category == FileCategory.APPS || mimeType == "application/vnd.android.package-archive"
 }
 
 data class WebMessage(

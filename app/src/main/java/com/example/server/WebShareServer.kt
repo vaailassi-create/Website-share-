@@ -6,6 +6,7 @@ import android.text.format.Formatter
 import com.example.model.FileCategory
 import com.example.model.SharedFile
 import com.example.model.WebMessage
+import com.example.util.InstalledApp
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,7 +24,11 @@ class WebShareServer(
     private val getSharedFiles: () -> List<SharedFile>,
     private val getMessages: () -> List<WebMessage>,
     private val getDeviceName: () -> String,
-    private val onActivityLogged: (String, Boolean) -> Unit
+    private val onActivityLogged: (String, Boolean) -> Unit,
+    private val onInstallRequested: ((String) -> Unit)? = null,
+    private val getInstalledApps: (() -> List<InstalledApp>)? = null,
+    private val onMakeApkRequested: ((String) -> SharedFile?)? = null,
+    private val onCreateCustomApkRequested: ((String, String, String) -> SharedFile?)? = null
 ) {
 
     private var serverSocket: ServerSocket? = null
@@ -168,6 +173,9 @@ class WebShareServer(
                             put("extension", file.extension)
                             put("dateModified", file.dateModified)
                             put("isReceived", file.isReceivedFromWeb)
+                            put("isApk", file.isApk)
+                            put("packageName", file.packageName ?: "")
+                            put("appVersion", file.appVersion ?: "")
                         }
                         jsonArray.put(obj)
                     }
@@ -262,6 +270,110 @@ class WebShareServer(
                         sendJsonResponse(out, JSONObject().put("success", true).put("deviceName", newDeviceName))
                     } else {
                         sendJsonResponse(out, JSONObject().put("success", false), 400)
+                    }
+                }
+
+                // API: Request install of APK app on mobile device
+                method == "POST" && path == "/api/install-app" -> {
+                    val body = readBody(reader, contentLength)
+                    val json = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+                    val queryParams = parseQueryParams(query)
+                    val fileId = json.optString("fileId", queryParams["fileId"] ?: "")
+                    if (fileId.isNotBlank()) {
+                        val file = getSharedFiles().find { it.id == fileId }
+                        val fileName = file?.name ?: "Application"
+                        onInstallRequested?.invoke(fileId)
+                        onActivityLogged("Install requested for '$fileName' on mobile", true)
+                        sendJsonResponse(
+                            out,
+                            JSONObject()
+                                .put("success", true)
+                                .put("message", "App install prompt sent to mobile device for $fileName")
+                        )
+                    } else {
+                        sendJsonResponse(out, JSONObject().put("success", false).put("error", "Missing fileId"), 400)
+                    }
+                }
+
+                // API: Get installed apps on Android device to make APK
+                method == "GET" && path == "/api/installed-apps" -> {
+                    val apps = getInstalledApps?.invoke() ?: emptyList()
+                    val jsonArray = JSONArray()
+                    for (app in apps) {
+                        val obj = JSONObject().apply {
+                            put("appName", app.appName)
+                            put("packageName", app.packageName)
+                            put("versionName", app.versionName)
+                            put("apkSize", app.apkSize)
+                            put("formattedSize", app.formattedSize)
+                            put("isSystemApp", app.isSystemApp)
+                            put("isCurrentApp", app.isCurrentApp)
+                        }
+                        jsonArray.put(obj)
+                    }
+                    sendJsonResponse(out, jsonArray)
+                }
+
+                // API: Make APK file by Android from installed app
+                method == "POST" && path == "/api/make-apk" -> {
+                    val body = readBody(reader, contentLength)
+                    val json = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+                    val queryParams = parseQueryParams(query)
+                    val packageName = json.optString("packageName", queryParams["packageName"] ?: "")
+                    if (packageName.isNotBlank()) {
+                        val createdFile = onMakeApkRequested?.invoke(packageName)
+                        if (createdFile != null) {
+                            onActivityLogged("Made APK file by Android: ${createdFile.name}", true)
+                            val fileObj = JSONObject().apply {
+                                put("id", createdFile.id)
+                                put("name", createdFile.name)
+                                put("formattedSize", createdFile.formattedSize)
+                                put("downloadUrl", "/download/${createdFile.id}")
+                            }
+                            sendJsonResponse(
+                                out,
+                                JSONObject()
+                                    .put("success", true)
+                                    .put("message", "APK successfully made by Android!")
+                                    .put("file", fileObj)
+                            )
+                        } else {
+                            sendJsonResponse(
+                                out,
+                                JSONObject().put("success", false).put("error", "Failed to extract/make APK on device"),
+                                500
+                            )
+                        }
+                    } else {
+                        sendJsonResponse(out, JSONObject().put("success", false).put("error", "Missing packageName"), 400)
+                    }
+                }
+
+                // API: Create custom APK archive package by Android
+                method == "POST" && path == "/api/create-custom-apk" -> {
+                    val body = readBody(reader, contentLength)
+                    val json = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+                    val appName = json.optString("appName", "CustomApp")
+                    val pkgName = json.optString("packageName", "com.example.${appName.lowercase().replace(Regex("[^a-z0-9]"), "")}")
+                    val version = json.optString("version", "1.0")
+                    val createdFile = onCreateCustomApkRequested?.invoke(appName, pkgName, version)
+                    if (createdFile != null) {
+                        onActivityLogged("Created custom APK by Android: ${createdFile.name}", true)
+                        val fileObj = JSONObject().apply {
+                            put("id", createdFile.id)
+                            put("name", createdFile.name)
+                            put("formattedSize", createdFile.formattedSize)
+                            put("downloadUrl", "/download/${createdFile.id}")
+                        }
+                        sendJsonResponse(
+                            out,
+                            JSONObject()
+                                .put("success", true)
+                                .put("message", "Custom APK created by Android!")
+                                .put("file", fileObj)
+                        )
+                    } else {
+                        sendJsonResponse(out, JSONObject().put("success", false).put("error", "Failed to create APK package"), 500)
                     }
                 }
 
@@ -440,6 +552,12 @@ class WebShareServer(
     }
 
     private fun sendJsonResponse(out: OutputStream, json: JSONObject, statusCode: Int = 200) {
+        val statusText = if (statusCode == 200) "OK" else "Error"
+        val data = json.toString().toByteArray(StandardCharsets.UTF_8)
+        sendResponse(out, statusCode, statusText, "application/json; charset=UTF-8", data)
+    }
+
+    private fun sendJsonResponse(out: OutputStream, json: JSONArray, statusCode: Int = 200) {
         val statusText = if (statusCode == 200) "OK" else "Error"
         val data = json.toString().toByteArray(StandardCharsets.UTF_8)
         sendResponse(out, statusCode, statusText, "application/json; charset=UTF-8", data)
@@ -817,6 +935,28 @@ class WebShareServer(
             border: 1px solid var(--border);
         }
 
+        .btn-install {
+            background: #10B981;
+            color: #0B132B;
+            font-weight: 600;
+        }
+
+        .btn-install:hover {
+            background: #34D399;
+        }
+
+        .app-badge {
+            display: inline-block;
+            background: rgba(16, 185, 129, 0.2);
+            color: #10B981;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.72rem;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
         /* Message / Chat Section */
         .message-section {
             background: var(--card-bg);
@@ -1033,7 +1173,7 @@ class WebShareServer(
                 <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
             </svg>
             <div class="upload-title">Click or Drag Files Here to Send to Phone</div>
-            <div class="upload-subtitle">Files uploaded will be sent wirelessly and stored instantly on the Android device</div>
+            <div class="upload-subtitle">Upload files or Android APKs directly to install apps wirelessly on mobile</div>
             <div id="uploadProgress"><div id="progressBar"></div></div>
         </div>
 
@@ -1041,11 +1181,13 @@ class WebShareServer(
         <div class="controls-bar">
             <div class="nav-tabs" id="categoryTabs">
                 <button class="tab-btn active" onclick="setCategory('ALL')">All (<span id="countAll">0</span>)</button>
+                <button class="tab-btn" onclick="setCategory('APPS')">Apps (APKs)</button>
                 <button class="tab-btn" onclick="setCategory('DOCUMENT')">Docs</button>
                 <button class="tab-btn" onclick="setCategory('IMAGE')">Photos</button>
                 <button class="tab-btn" onclick="setCategory('VIDEO')">Videos</button>
                 <button class="tab-btn" onclick="setCategory('AUDIO')">Audio</button>
                 <button class="tab-btn" onclick="setCategory('RECEIVED')">Received</button>
+                <button class="tab-btn" onclick="openMakeApkModal()" style="border: 1px solid #10B981; color: #10B981; font-weight: 700; background: rgba(16, 185, 129, 0.1);">📦 Make APK by Android</button>
             </div>
 
             <div class="search-wrap">
@@ -1100,6 +1242,44 @@ class WebShareServer(
             <div class="modal-buttons">
                 <button class="btn-cancel" onclick="closeDeviceModal()">Cancel</button>
                 <button class="btn-confirm" onclick="submitDeviceRename()">Save Name</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Make APK by Android -->
+    <div class="modal-overlay" id="makeApkModal">
+        <div class="modal-card" style="max-width: 520px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-title" style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 8px;">
+                <span>📦 Make APK File by Android</span>
+                <button onclick="closeMakeApkModal()" style="background:none; border:none; color:var(--text-muted); font-size:1.3rem; cursor:pointer;">&times;</button>
+            </div>
+            <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:12px;">
+                Make or extract standalone APK installer files from Android applications installed on the phone.
+            </div>
+            <input type="text" id="apkSearchInput" class="modal-input" placeholder="Search phone apps to make APK..." style="margin-bottom:12px;" oninput="filterInstalledApps()">
+            <div id="installedAppsContainer" style="flex:1; overflow-y:auto; max-height: 300px; display:flex; flex-direction:column; gap:8px; padding-right:4px;">
+                <div style="text-align:center; padding:20px; color:var(--text-muted);">Loading apps from phone...</div>
+            </div>
+            <div class="modal-buttons" style="margin-top:14px; border-top:1px solid var(--border); padding-top:12px;">
+                <button class="btn-cancel" onclick="closeMakeApkModal()">Close</button>
+                <button class="btn-confirm" onclick="openCustomApkModal()" style="background:#10B981; color:#0B132B;">+ Create Blank APK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Create Custom APK Package -->
+    <div class="modal-overlay" id="customApkModal">
+        <div class="modal-card">
+            <div class="modal-title">Make Custom APK by Android</div>
+            <label style="font-size:0.8rem; color:var(--text-muted); margin-bottom:4px; display:block;">Application Name</label>
+            <input type="text" id="customApkName" class="modal-input" placeholder="e.g. MyMobileTool">
+            <label style="font-size:0.8rem; color:var(--text-muted); margin-bottom:4px; display:block;">Package Name</label>
+            <input type="text" id="customApkPkg" class="modal-input" placeholder="com.example.mymobiletool">
+            <label style="font-size:0.8rem; color:var(--text-muted); margin-bottom:4px; display:block;">Version</label>
+            <input type="text" id="customApkVersion" class="modal-input" value="1.0" placeholder="1.0">
+            <div class="modal-buttons">
+                <button class="btn-cancel" onclick="closeCustomApkModal()">Cancel</button>
+                <button class="btn-confirm" onclick="submitCreateCustomApk()" style="background:#10B981; color:#0B132B;">Make APK File</button>
             </div>
         </div>
     </div>
@@ -1184,16 +1364,22 @@ class WebShareServer(
                 var extLabel = f.extension || 'FILE';
                 var safeName = escapeHtml(f.name);
                 var safeId = f.id;
-                var safeMeta = f.formattedSize + ' &bull; ' + f.category;
+                var isApk = f.isApk || f.category === 'APPS' || extLabel === 'APK';
+                var badgeStyle = isApk ? ' style="background:rgba(16,185,129,0.2);color:#10B981;"' : '';
+                var safeMeta = f.formattedSize + ' &bull; ' + (isApk ? 'App (APK)' : f.category);
+                var installBtn = isApk ? ('<button class="btn-action btn-install" onclick="requestAppInstall(\'' + safeId + '\', \'' + safeName.replace(/\'/g, "\\'") + '\')">' +
+                    '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg> Install on Mobile' +
+                '</button>') : '';
 
                 card.innerHTML = '<div class="file-header">' +
-                    '<div class="file-badge">' + extLabel + '</div>' +
+                    '<div class="file-badge"' + badgeStyle + '>' + extLabel + '</div>' +
                     '<div class="file-info">' +
-                        '<div class="file-name" title="' + safeName + '">' + safeName + '</div>' +
+                        '<div class="file-name" title="' + safeName + '">' + safeName + (isApk ? ' <span class="app-badge">APK</span>' : '') + '</div>' +
                         '<div class="file-meta">' + safeMeta + '</div>' +
                     '</div>' +
                 '</div>' +
                 '<div class="file-actions">' +
+                    installBtn +
                     '<a href="/download/' + safeId + '" class="btn-action btn-download" download>' +
                         '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> Download' +
                     '</a>' +
@@ -1202,6 +1388,27 @@ class WebShareServer(
                     '</button>' +
                 '</div>';
                 grid.appendChild(card);
+            });
+        }
+
+        // Request install app on mobile device
+        function requestAppInstall(fileId, fileName) {
+            if (!confirm('Send install prompt to mobile phone for ' + fileName + '?')) return;
+            fetch('/api/install-app', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ fileId: fileId })
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    alert('Install request sent to phone! Please check your mobile screen to finish installation.');
+                } else {
+                    alert('Could not start install on mobile: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(function(err) {
+                alert('Connection error communicating with phone.');
             });
         }
 
@@ -1293,8 +1500,12 @@ class WebShareServer(
             const bar = document.getElementById('progressBar');
             progressWrap.style.display = 'block';
 
+            var hasApk = false;
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
+                if (file.name.toLowerCase().endsWith('.apk')) {
+                    hasApk = true;
+                }
                 bar.style.width = Math.round(((i) / files.length) * 100) + '%';
                 try {
                     await fetch('/api/upload', {
@@ -1314,6 +1525,9 @@ class WebShareServer(
                 progressWrap.style.display = 'none';
                 bar.style.width = '0%';
                 loadFiles();
+                if (hasApk) {
+                    alert('Android APK sent to mobile! You can now tap "Install on Mobile" on the web page or confirm on the mobile device to install.');
+                }
             }, 600);
         }
 
@@ -1337,6 +1551,120 @@ class WebShareServer(
                 uploadSelectedFiles(dt.files);
             }
         });
+
+        let installedApps = [];
+
+        function openMakeApkModal() {
+            document.getElementById('makeApkModal').style.display = 'flex';
+            loadInstalledApps();
+        }
+
+        function closeMakeApkModal() {
+            document.getElementById('makeApkModal').style.display = 'none';
+        }
+
+        async function loadInstalledApps() {
+            const container = document.getElementById('installedAppsContainer');
+            container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-muted);">Scanning installed applications on phone...</div>';
+            try {
+                const res = await fetch('/api/installed-apps');
+                installedApps = await res.json();
+                renderInstalledApps(installedApps);
+            } catch (e) {
+                container.innerHTML = '<div style="text-align:center; padding:20px; color:#EF4444;">Failed to load installed apps from phone.</div>';
+            }
+        }
+
+        function renderInstalledApps(apps) {
+            const container = document.getElementById('installedAppsContainer');
+            if (!apps || apps.length === 0) {
+                container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-muted);">No installed apps found.</div>';
+                return;
+            }
+            container.innerHTML = '';
+            apps.forEach(app => {
+                const item = document.createElement('div');
+                item.style.cssText = 'display:flex; align-items:center; justify-content:space-between; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 14px; gap:10px;';
+                
+                const isCurrent = app.isCurrentApp;
+                const badge = isCurrent ? ' <span style="background:rgba(0,180,216,0.2); color:var(--primary); font-size:0.7rem; padding:2px 6px; border-radius:4px; font-weight:bold;">This App</span>' : '';
+
+                item.innerHTML = '<div>' +
+                    '<div style="font-weight:600; font-size:0.92rem; color:var(--text-main);">' + escapeHtml(app.appName) + badge + '</div>' +
+                    '<div style="font-size:0.75rem; color:var(--text-muted);">' + escapeHtml(app.packageName) + ' &bull; v' + escapeHtml(app.versionName) + ' (' + escapeHtml(app.formattedSize) + ')</div>' +
+                '</div>' +
+                '<button onclick="requestMakeApk(\'' + escapeHtml(app.packageName) + '\', \'' + escapeHtml(app.appName).replace(/\'/g, "\\'") + '\')" style="background:#10B981; color:#0B132B; font-weight:700; border:none; border-radius:6px; padding:6px 12px; font-size:0.8rem; cursor:pointer; flex-shrink:0;">' +
+                    'Make APK' +
+                '</button>';
+                container.appendChild(item);
+            });
+        }
+
+        function filterInstalledApps() {
+            const query = document.getElementById('apkSearchInput').value.toLowerCase().trim();
+            if (!query) {
+                renderInstalledApps(installedApps);
+                return;
+            }
+            const filtered = installedApps.filter(a => a.appName.toLowerCase().indexOf(query) !== -1 || a.packageName.toLowerCase().indexOf(query) !== -1);
+            renderInstalledApps(filtered);
+        }
+
+        async function requestMakeApk(pkgName, appName) {
+            if (!confirm('Make standalone APK file from "' + appName + '" on the phone?')) return;
+            try {
+                const res = await fetch('/api/make-apk', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ packageName: pkgName })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('APK created successfully: ' + result.file.name + '!\nIt is now ready in your files and can be downloaded.');
+                    closeMakeApkModal();
+                    loadFiles();
+                    window.location.href = result.file.downloadUrl;
+                } else {
+                    alert('Error making APK: ' + (result.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Network error communicating with phone to make APK.');
+            }
+        }
+
+        function openCustomApkModal() {
+            closeMakeApkModal();
+            document.getElementById('customApkModal').style.display = 'flex';
+        }
+
+        function closeCustomApkModal() {
+            document.getElementById('customApkModal').style.display = 'none';
+        }
+
+        async function submitCreateCustomApk() {
+            const appName = document.getElementById('customApkName').value.trim() || 'CustomApp';
+            const pkgName = document.getElementById('customApkPkg').value.trim() || ('com.example.' + appName.toLowerCase().replace(/[^a-z0-9]/g, ''));
+            const version = document.getElementById('customApkVersion').value.trim() || '1.0';
+
+            try {
+                const res = await fetch('/api/create-custom-apk', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ appName: appName, packageName: pkgName, version: version })
+                });
+                const result = await res.json();
+                if (result.success) {
+                    alert('Custom APK file created: ' + result.file.name);
+                    closeCustomApkModal();
+                    loadFiles();
+                    window.location.href = result.file.downloadUrl;
+                } else {
+                    alert('Failed to create APK: ' + (result.error || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Network error creating custom APK.');
+            }
+        }
 
         function escapeHtml(str) {
             if (!str) return '';

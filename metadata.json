@@ -1,6 +1,6 @@
 {
   "name": "Web Share",
-  "description": "Web Share My File - Fast wireless file sharing and management over local web browser with renaming and messaging.",
+  "description": "Local wireless file sharing, remote web file renaming, APK file generation and direct mobile app installation.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

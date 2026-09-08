@@ -47,6 +47,7 @@ import com.example.model.ServerStatus
 import com.example.model.SharedFile
 import com.example.model.WebMessage
 import com.example.ui.theme.*
+import com.example.util.InstalledApp
 import com.example.util.QRCodeGenerator
 
 @Composable
@@ -481,6 +482,7 @@ fun SharedFileCard(
     file: SharedFile,
     onRename: () -> Unit,
     onRemove: () -> Unit,
+    onInstall: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -507,6 +509,7 @@ fun SharedFileCard(
                     .clip(RoundedCornerShape(10.dp))
                     .background(
                         when (file.category) {
+                            FileCategory.APPS -> BrightEmerald.copy(alpha = 0.2f)
                             FileCategory.IMAGE -> Color(0xFF0284C7).copy(alpha = 0.2f)
                             FileCategory.VIDEO -> Color(0xFF7C3AED).copy(alpha = 0.2f)
                             FileCategory.AUDIO -> Color(0xFFD97706).copy(alpha = 0.2f)
@@ -521,6 +524,7 @@ fun SharedFileCard(
                     text = if (file.extension.isNotEmpty()) file.extension.take(4) else "FILE",
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                     color = when (file.category) {
+                        FileCategory.APPS -> BrightEmerald
                         FileCategory.IMAGE -> Color(0xFF38BDF8)
                         FileCategory.VIDEO -> Color(0xFFA78BFA)
                         FileCategory.AUDIO -> Color(0xFFFBBF24)
@@ -558,6 +562,22 @@ fun SharedFileCard(
                             )
                         }
                     }
+                    if (file.isApk) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(BrightEmerald.copy(alpha = 0.25f))
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "APK",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = BrightEmerald,
+                                fontSize = 9.sp
+                            )
+                        }
+                    }
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
@@ -567,8 +587,23 @@ fun SharedFileCard(
                 )
             }
 
-            // Quick Actions: Rename & Remove
+            // Quick Actions: Install, Rename, Share & Remove
             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                // Install button for mobile app APK
+                if (file.isApk) {
+                    IconButton(
+                        onClick = { onInstall?.invoke() },
+                        modifier = Modifier.size(36.dp).testTag("install_app_${file.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Android,
+                            contentDescription = "Install App on Mobile",
+                            tint = BrightEmerald,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
                 // Rename button
                 IconButton(
                     onClick = onRename,
@@ -1050,4 +1085,438 @@ fun ActivityLogSheet(
             }
         }
     }
+}
+
+@Composable
+fun AppInstallModalDialog(
+    file: SharedFile,
+    onDismiss: () -> Unit,
+    onInstall: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DeepCobalt,
+        icon = {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(CircleShape)
+                    .background(BrightEmerald.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Android,
+                    contentDescription = null,
+                    tint = BrightEmerald,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        },
+        title = {
+            Text(
+                text = "Install App on Mobile",
+                color = TextLight,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Do you want to launch the system package installer to install this app on your mobile device?",
+                    color = TextMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center
+                )
+                Card(
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = SlateSurface),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = file.name,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextLight,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Size: ${file.formattedSize}${if (!file.appVersion.isNullOrBlank()) " • v${file.appVersion}" else ""}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CyanLight
+                        )
+                        if (!file.packageName.isNullOrBlank()) {
+                            Text(
+                                text = file.packageName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onInstall,
+                colors = ButtonDefaults.buttonColors(containerColor = BrightEmerald),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("confirm_install_app_button")
+            ) {
+                Text("Install on Mobile", color = MidnightNavy, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
+            }
+        }
+    )
+}
+
+@Composable
+fun MakeApkDialog(
+    installedApps: List<InstalledApp>,
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onMakeApk: (InstalledApp) -> Unit,
+    onCreateCustomApk: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredApps = remember(installedApps, searchQuery) {
+        if (searchQuery.isBlank()) installedApps
+        else {
+            installedApps.filter {
+                it.appName.contains(searchQuery, ignoreCase = true) ||
+                it.packageName.contains(searchQuery, ignoreCase = true)
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(BrightEmerald),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Android,
+                        contentDescription = null,
+                        tint = MidnightNavy,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = "Make APK by Android",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp,
+                        color = TextLight
+                    )
+                    Text(
+                        text = "Extract APK from installed apps to share",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextMuted
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+            ) {
+                // Search bar
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search installed apps...", color = TextMuted, fontSize = 13.sp) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = TextMuted, modifier = Modifier.size(18.dp))
+                    },
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear", tint = TextMuted, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = CardBackground,
+                        unfocusedContainerColor = CardBackground,
+                        focusedBorderColor = BrightEmerald,
+                        unfocusedBorderColor = BorderColor,
+                        focusedTextColor = TextLight,
+                        unfocusedTextColor = TextLight
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                        .testTag("search_make_apk_input")
+                )
+
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CircularProgressIndicator(color = BrightEmerald, modifier = Modifier.size(32.dp))
+                            Text("Scanning installed applications...", color = TextMuted, fontSize = 12.sp)
+                        }
+                    }
+                } else if (filteredApps.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (installedApps.isEmpty()) "No installed apps found" else "No matching apps found",
+                            color = TextMuted,
+                            fontSize = 13.sp
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(filteredApps, key = { it.packageName }) { app ->
+                            Card(
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = CardBackground),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, BorderColor),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = app.appName,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = TextLight,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (app.isCurrentApp) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(ElectricCyan.copy(alpha = 0.2f))
+                                                        .padding(horizontal = 4.dp, vertical = 1.dp)
+                                                ) {
+                                                    Text("This App", color = ElectricCyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            text = "${app.packageName} • v${app.versionName} (${app.formattedSize})",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = TextMuted,
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    Button(
+                                        onClick = { onMakeApk(app) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = BrightEmerald),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.testTag("make_apk_btn_${app.packageName}")
+                                    ) {
+                                        Text(
+                                            text = "Make APK",
+                                            color = MidnightNavy,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onCreateCustomApk,
+                colors = ButtonDefaults.buttonColors(containerColor = ElectricCyan),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("create_custom_apk_button")
+            ) {
+                Text("+ Create Blank APK", color = MidnightNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = TextMuted)
+            }
+        },
+        containerColor = SlateSurface
+    )
+}
+
+@Composable
+fun CreateCustomApkDialog(
+    onDismiss: () -> Unit,
+    onCreate: (name: String, packageName: String, version: String) -> Unit
+) {
+    var appName by remember { mutableStateOf("") }
+    var packageName by remember { mutableStateOf("") }
+    var version by remember { mutableStateOf("1.0") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(BrightEmerald),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Build,
+                        contentDescription = null,
+                        tint = MidnightNavy,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Text("Make Custom APK by Android", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = TextLight)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Generate a custom standalone APK archive structure with AndroidManifest.xml and DEX bytecode.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextMuted
+                )
+
+                OutlinedTextField(
+                    value = appName,
+                    onValueChange = {
+                        appName = it
+                        if (packageName.isBlank() || packageName.startsWith("com.example.")) {
+                            packageName = "com.example." + it.lowercase().replace(Regex("[^a-z0-9]"), "")
+                        }
+                    },
+                    label = { Text("Application Name") },
+                    placeholder = { Text("e.g. MyMobileApp") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = CardBackground,
+                        unfocusedContainerColor = CardBackground,
+                        focusedBorderColor = BrightEmerald,
+                        unfocusedBorderColor = BorderColor,
+                        focusedTextColor = TextLight,
+                        unfocusedTextColor = TextLight
+                    ),
+                    modifier = Modifier.fillMaxWidth().testTag("custom_apk_name_input")
+                )
+
+                OutlinedTextField(
+                    value = packageName,
+                    onValueChange = { packageName = it },
+                    label = { Text("Package Name") },
+                    placeholder = { Text("com.example.mymobileapp") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = CardBackground,
+                        unfocusedContainerColor = CardBackground,
+                        focusedBorderColor = BrightEmerald,
+                        unfocusedBorderColor = BorderColor,
+                        focusedTextColor = TextLight,
+                        unfocusedTextColor = TextLight
+                    ),
+                    modifier = Modifier.fillMaxWidth().testTag("custom_apk_pkg_input")
+                )
+
+                OutlinedTextField(
+                    value = version,
+                    onValueChange = { version = it },
+                    label = { Text("Version") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = CardBackground,
+                        unfocusedContainerColor = CardBackground,
+                        focusedBorderColor = BrightEmerald,
+                        unfocusedBorderColor = BorderColor,
+                        focusedTextColor = TextLight,
+                        unfocusedTextColor = TextLight
+                    ),
+                    modifier = Modifier.fillMaxWidth().testTag("custom_apk_ver_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val finalName = if (appName.isBlank()) "CustomApp" else appName.trim()
+                    val finalPkg = if (packageName.isBlank()) "com.example.${finalName.lowercase().replace(Regex("[^a-z0-9]"), "")}" else packageName.trim()
+                    val finalVer = if (version.isBlank()) "1.0" else version.trim()
+                    onCreate(finalName, finalPkg, finalVer)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = BrightEmerald),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("submit_create_custom_apk_button")
+            ) {
+                Text("Make APK File", color = MidnightNavy, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = TextMuted)
+            }
+        },
+        containerColor = SlateSurface
+    )
 }

@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -47,6 +48,9 @@ fun WebShareScreen(
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
     val activityLogs by viewModel.activityLogs.collectAsStateWithLifecycle()
+    val installPromptFile by viewModel.installPromptFile.collectAsStateWithLifecycle()
+    val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
+    val isScanningApps by viewModel.isScanningApps.collectAsStateWithLifecycle()
 
     // Dialog state controllers
     var fileToRename by remember { mutableStateOf<SharedFile?>(null) }
@@ -54,6 +58,8 @@ fun WebShareScreen(
     var showFullscreenQR by remember { mutableStateOf(false) }
     var showActivityLogs by remember { mutableStateOf(false) }
     var showAddOptionsDialog by remember { mutableStateOf(false) }
+    var showMakeApkDialog by remember { mutableStateOf(false) }
+    var showCustomApkDialog by remember { mutableStateOf(false) }
 
     // System file picker launcher
     val documentPickerLauncher = rememberLauncherForActivityResult(
@@ -246,6 +252,73 @@ fun WebShareScreen(
                 )
             }
 
+            // 4b. Make APK by Android Quick Action Card
+            item {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = SlateSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, BrightEmerald.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth().testTag("make_apk_feature_card")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(BrightEmerald.copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Android,
+                                    contentDescription = null,
+                                    tint = BrightEmerald,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    text = "Make APK by Android",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = TextLight
+                                )
+                                Text(
+                                    text = "Extract APK from installed phone apps or create custom APKs",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextMuted,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                viewModel.loadInstalledAppsList()
+                                showMakeApkDialog = true
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = BrightEmerald),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("open_make_apk_dialog_btn")
+                        ) {
+                            Text("Make APK", color = MidnightNavy, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
             // 5. Search Field
             item {
                 OutlinedTextField(
@@ -336,7 +409,8 @@ fun WebShareScreen(
                     SharedFileCard(
                         file = file,
                         onRename = { fileToRename = file },
-                        onRemove = { viewModel.removeFile(file.id) }
+                        onRemove = { viewModel.removeFile(file.id) },
+                        onInstall = { viewModel.promptInstall(file) }
                     )
                 }
             }
@@ -350,6 +424,17 @@ fun WebShareScreen(
                 )
             }
         }
+    }
+
+    // Modal: Install App on Mobile Confirmation Dialog
+    installPromptFile?.let { targetApk ->
+        AppInstallModalDialog(
+            file = targetApk,
+            onDismiss = { viewModel.dismissInstallPrompt() },
+            onInstall = {
+                viewModel.installAppDirectly(targetApk)
+            }
+        )
     }
 
     // Modal: Rename File Dialog (direct user request: "name change by web share my file")
@@ -469,11 +554,99 @@ fun WebShareScreen(
                             }
                         }
                     }
+
+                    // Option 3: Make APK from Mobile Apps
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = CardBackground),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showAddOptionsDialog = false
+                                viewModel.loadInstalledAppsList()
+                                showMakeApkDialog = true
+                            }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.Android, contentDescription = null, tint = BrightEmerald)
+                            Column {
+                                Text("Make APK from Installed App", fontWeight = FontWeight.SemiBold, color = TextLight)
+                                Text("Extract Android APKs from phone apps to share or install", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                            }
+                        }
+                    }
+
+                    // Option 4: Make Custom APK Package
+                    Card(
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = CardBackground),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showAddOptionsDialog = false
+                                showCustomApkDialog = true
+                            }
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(Icons.Default.Build, contentDescription = null, tint = ElectricCyan)
+                            Column {
+                                Text("Make Custom APK Package", fontWeight = FontWeight.SemiBold, color = TextLight)
+                                Text("Build a custom APK archive with Manifest and bytecode", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showAddOptionsDialog = false }) {
                     Text("Close", color = ElectricCyan)
+                }
+            }
+        )
+    }
+
+    // Make APK from Installed Apps Dialog
+    if (showMakeApkDialog) {
+        MakeApkDialog(
+            installedApps = installedApps,
+            isLoading = isScanningApps,
+            onDismiss = { showMakeApkDialog = false },
+            onMakeApk = { app ->
+                viewModel.makeApk(app) { success, msg ->
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    if (success) {
+                        showMakeApkDialog = false
+                    }
+                }
+            },
+            onCreateCustomApk = {
+                showMakeApkDialog = false
+                showCustomApkDialog = true
+            },
+            onRefresh = { viewModel.loadInstalledAppsList() }
+        )
+    }
+
+    // Make Custom APK Package Dialog
+    if (showCustomApkDialog) {
+        CreateCustomApkDialog(
+            onDismiss = { showCustomApkDialog = false },
+            onCreate = { appName, pkgName, ver ->
+                viewModel.makeCustomApk(appName, pkgName, ver) { success, msg ->
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    if (success) {
+                        showCustomApkDialog = false
+                    }
                 }
             }
         )

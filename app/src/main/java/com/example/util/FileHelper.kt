@@ -15,6 +15,7 @@ object FileHelper {
 
     fun getCategoryForMime(mimeType: String, extension: String): FileCategory {
         return when {
+            extension == "APK" || mimeType == "application/vnd.android.package-archive" -> FileCategory.APPS
             mimeType.startsWith("image/") || extension in listOf("JPG", "JPEG", "PNG", "GIF", "WEBP", "SVG") -> FileCategory.IMAGE
             mimeType.startsWith("video/") || extension in listOf("MP4", "MKV", "WEBM", "AVI", "MOV") -> FileCategory.VIDEO
             mimeType.startsWith("audio/") || extension in listOf("MP3", "WAV", "OGG", "M4A", "FLAC") -> FileCategory.AUDIO
@@ -177,6 +178,27 @@ object FileHelper {
                 file = jsonFile,
                 dateModified = jsonFile.lastModified(),
                 isReceivedFromWeb = false
+            )
+        )
+
+        // 5. Sample APK Package File
+        val apkFile = File(samplesDir, "WebShare_Utility_v1.0.apk")
+        if (!apkFile.exists() || apkFile.length() == 0L) {
+            // Write standard zip/apk archive header
+            apkFile.writeBytes(byteArrayOf(0x50, 0x4B, 0x05, 0x06, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        }
+        sampleList.add(
+            SharedFile(
+                id = "sample_apk",
+                name = apkFile.name,
+                size = if (apkFile.length() > 0) apkFile.length() else 1024L * 1024L * 4L,
+                mimeType = "application/vnd.android.package-archive",
+                category = FileCategory.APPS,
+                file = apkFile,
+                dateModified = apkFile.lastModified(),
+                isReceivedFromWeb = false,
+                packageName = "com.example.webshare.utility",
+                appVersion = "1.0"
             )
         )
 
