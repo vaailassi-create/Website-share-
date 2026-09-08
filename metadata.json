@@ -1,0 +1,6 @@
+{
+  "name": "Web Share",
+  "description": "Web Share My File - Fast wireless file sharing and management over local web browser with renaming and messaging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
